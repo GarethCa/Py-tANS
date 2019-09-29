@@ -4,7 +4,7 @@ This repository contains an implementation of the tANS algorithm developer by bo
 
 Asymmetric Numeral Systems is an approach to entropy encoding discovered by Jarek Duda, detailed in the following report. https://arxiv.org/abs/1311.2540 
 
-The code in this repository is an adaptation of the method of tANS used by Yann Collet within Zstd, developed for Facebook, specifically the Finite State Entropy code. The original code detailed its usage with the C programming language while this repo contains a Python Implementation. https://github.com/Cyan4973/FiniteStateEntropy
+The code in this repository is an adaptation of the method of tANS used by Yann Collet within Zstd, developed for Facebook, specifically the Finite State Entropy code. The original code detailed its usage with the C programming language while this repo contains a Python Implementation. https://github.com/Cyan4973/FiniteStateEntropy  http://fastcompression.blogspot.com/2013/12/finite-state-entropy-new-breed-of.html
 
 ## Algorithm Overview
 
