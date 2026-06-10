@@ -1,16 +1,79 @@
 # Py-tANS
 
-A pure-Python implementation of **tANS** (tabled Asymmetric Numeral Systems), the
-entropy coder developed by Jarek Duda and Yann Collet.
+This repository contains a pure-Python implementation of the **tANS** (tabled
+Asymmetric Numeral Systems) algorithm developed by both Yann Collet and Jarek
+Duda.
 
-Asymmetric Numeral Systems is an approach to entropy encoding discovered by Jarek
-Duda, detailed in [arXiv:1311.2540](https://arxiv.org/abs/1311.2540). The code in
-this repository follows the tANS construction used by Yann Collet's
-[Finite State Entropy](https://github.com/Cyan4973/FiniteStateEntropy) (the entropy
-stage of Zstandard) — see his
+Asymmetric Numeral Systems is an approach to entropy encoding discovered by
+Jarek Duda, detailed in the following report:
+[arXiv:1311.2540](https://arxiv.org/abs/1311.2540).
+
+The code in this repository is an adaptation of the method of tANS used by Yann
+Collet within Zstd, developed for Facebook — specifically the
+[Finite State Entropy](https://github.com/Cyan4973/FiniteStateEntropy) code. The
+original code detailed its usage with the C programming language, while this
+repo contains a Python implementation; see Collet's
 [blog series](http://fastcompression.blogspot.com/2013/12/finite-state-entropy-new-breed-of.html)
-for a walkthrough. The original exploratory Jupyter notebook lives in
-[`examples/Py-tANS.ipynb`](examples/Py-tANS.ipynb).
+for a walkthrough of the method. The original exploratory Jupyter notebook lives
+in [`examples/Py-tANS.ipynb`](examples/Py-tANS.ipynb).
+
+## Algorithm Overview
+
+tANS or FSE is a method of range coding using an Asymmetric Numeral System. A
+set of states are used so that the probability of a state occurring is as close
+as possible to the probability of the symbol it represents.
+
+The action of changing states is analogous to changing state within a finite
+state machine, where we output bits to a bitstream as we change state by
+encoding one more symbol.
+
+<img src=https://3.bp.blogspot.com/-2kAzQkAjifA/WXFdxA2UjYI/AAAAAAAABwo/YcQwCC7Jmm0p8x55y-d3tuBwxdk-MtnrgCPcBGAYYCw/s1600/4states.png />
+
+The hardest part of the algorithm to understand is how symbols are encoded at
+close to the number of bits we can theoretically reach — the optimal bits per
+symbol given by the Shannon entropy calculation — when that entropy is a
+fractional number of bits. We only ever output an integer number of bits per
+symbol, so we must occasionally use fewer or more bits to encode a symbol, so
+that the *average* best matches the fractional ideal.
+
+This is achieved by outputting a variable number of bits depending on which
+"subrange" of states the current state falls into. The idea is that the number
+of bits output will not be optimal on a one-output basis, but instead will
+average to the correct fraction.
+
+<img src=https://3.bp.blogspot.com/-4fGLCD4S3ck/WXI2nGBruzI/AAAAAAAABww/pXffRq9_TT4IdHTKSqupSKRhGyeIEZEXgCLcBGAs/s1600/5ranges.png />
+
+Another factor to consider is the concept of moving between states, which must
+correctly tell us what symbol was last encoded. This is accomplished by
+outputting the binary representation of how many states we must move as the bit
+output, which requires the spacing between a symbol's states to be consistent
+with the sub-range bits seen in the picture above.
+
+To accomplish this, the states are spread across the state space in such a way
+as to provide the correct gaps between sub-range values — this package uses
+FSE's coprime-step spread.
+
+<img src=http://2.bp.blogspot.com/-xbkXS6jDSCk/Uvf238sQKmI/AAAAAAAAA-Q/I0AmHbver98/s1600/16states_fastScan.png />
+
+The spreading of symbols can be done in multiple different ways, and can even be
+scrambled based on a cryptographic key, trading some compression for the
+property that only a holder of the key can decode.
+
+## Limitations
+
+- tANS is an order-0 entropy coder: it exploits symbol frequencies, not
+  repetition. Use it as the entropy stage after a match-finder (as Zstd does),
+  or expect text to shrink only to its order-0 entropy.
+- The encoding is fragile by design: a corrupted bit changes everything decoded
+  after it. The decoder's bit-accounting and final-state checks detect
+  corruption, but there is no checksum and no recovery.
+- No random access or streaming: tANS decodes the bitstream last-in-first-out,
+  so a frame must be decoded as a whole.
+- This is a readable pure-Python implementation, not a fast one.
+
+---
+
+# The `pytans` package
 
 ## What it can do
 
@@ -30,9 +93,9 @@ for a walkthrough. The original exploratory Jupyter notebook lives in
 - **Tunable precision/size trade-off** — `table_log` (4–15) sets the state-table
   size to `2**table_log`; an FSE-style heuristic picks a sensible value
   automatically from the input size and alphabet.
-- **Frequency tooling** — `normalize_counts()` scales raw counts to a power-of-two
-  total while guaranteeing rare symbols stay encodable; `optimal_table_log()`
-  exposes the auto-sizing heuristic.
+- **Frequency tooling** — `normalize_counts()` scales raw counts to a
+  power-of-two total while guaranteeing rare symbols stay encodable;
+  `optimal_table_log()` exposes the auto-sizing heuristic.
 - **Corruption detection** — truncated or malformed frames, bad headers and
   bitstreams that fail the decoder's final-state / bit-accounting invariants all
   raise `CorruptedDataError` rather than returning wrong data silently.
@@ -77,7 +140,8 @@ Incompressible input falls back to raw storage instead of growing:
 ### One-shot frames
 
 `compress` returns a frame containing a magic number, the normalised symbol
-table, the original length and the tANS payload. `decompress` needs nothing else:
+table, the original length and the tANS payload. `decompress` needs nothing
+else:
 
 ```python
 blob = pytans.compress(data)                # auto-sized table, capped at 2**12 states
@@ -107,8 +171,8 @@ message = decoder.decode(payload, bit_length, length=15)
 
 `encode` returns `(payload, bit_length)`; decoding needs the payload, the exact
 bit length (the final byte is zero-padded) and the message length in symbols, so
-store or transmit those two integers alongside the payload — that is exactly what
-the frame format does for you.
+store or transmit those two integers alongside the payload — that is exactly
+what the frame format does for you.
 
 A coder can encode anything drawn from its alphabet — encoding a byte it has
 never seen raises `ValueError`:
@@ -180,48 +244,6 @@ Existing outputs are never overwritten without `-f/--force`.
 
 The exact frame layout is documented in
 [`src/pytans/frame.py`](src/pytans/frame.py).
-
-## Algorithm Overview
-
-tANS or FSE is a method of range coding using an Asymmetric Numeral System. A set
-of states are used so that the probability of a state occurring is as close as
-possible to the probability of the symbol it represents.
-
-The action of changing states is analogous to changing state within a finite state
-machine, where we output bits to a bitstream as we change state by encoding one
-more symbol.
-
-<img src=https://3.bp.blogspot.com/-2kAzQkAjifA/WXFdxA2UjYI/AAAAAAAABwo/YcQwCC7Jmm0p8x55y-d3tuBwxdk-MtnrgCPcBGAYYCw/s1600/4states.png />
-
-The hardest part of the algorithm is encoding symbols at close to their Shannon
-entropy when that entropy is a fractional number of bits. We only ever output an
-integer number of bits per symbol, so we must occasionally use fewer or more bits
-for a symbol so that the *average* matches the fractional ideal.
-
-This is achieved by outputting a variable number of bits depending on which
-"subrange" of states the current state falls into: no single output is optimal,
-but the outputs average to the correct fraction.
-
-<img src=https://3.bp.blogspot.com/-4fGLCD4S3ck/WXI2nGBruzI/AAAAAAAABww/pXffRq9_TT4IdHTKSqupSKRhGyeIEZEXgCLcBGAs/s1600/5ranges.png />
-
-Decoding relies on moving between states in a way that identifies which symbol was
-last encoded. To make that work, each symbol's states are spread across the state
-space with consistent gaps matching its sub-range bit counts — this package uses
-FSE's coprime-step spread.
-
-<img src=http://2.bp.blogspot.com/-xbkXS6jDSCk/Uvf238sQKmI/AAAAAAAAA-Q/I0AmHbver98/s1600/16states_fastScan.png />
-
-## Limitations
-
-- tANS is an order-0 entropy coder: it exploits symbol frequencies, not
-  repetition. Use it as the entropy stage after a match-finder (as Zstd does), or
-  expect text to shrink only to its order-0 entropy.
-- The encoding is fragile by design: a corrupted bit changes everything decoded
-  after it. The decoder's bit-accounting and final-state checks detect corruption,
-  but there is no checksum and no recovery.
-- No random access or streaming: tANS decodes the bitstream last-in-first-out, so
-  a frame must be decoded as a whole.
-- This is a readable pure-Python implementation, not a fast one.
 
 ## Development
 
