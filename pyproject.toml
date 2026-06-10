@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pytans"
+version = "0.1.0"
+description = "Pure-Python tabled Asymmetric Numeral Systems (tANS / FSE-style) entropy coder"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Gareth Cairns" }]
+keywords = ["compression", "entropy-coding", "ans", "tans", "fse", "zstd"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: System :: Archiving :: Compression",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/GarethCa/Py-tANS"
+Source = "https://github.com/GarethCa/Py-tANS"
+
+[project.scripts]
+pytans = "pytans.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pytans"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
