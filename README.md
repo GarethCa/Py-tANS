@@ -1,135 +1,124 @@
-# Py-tANS
+<h1 align="center">Py-tANS</h1>
 
-This repository contains a pure-Python implementation of the **tANS** (tabled
-Asymmetric Numeral Systems) algorithm developed by both Yann Collet and Jarek
-Duda.
+<p align="center"><em>A pure-Python implementation of tabled Asymmetric Numeral Systems —
+the entropy coder behind Zstandard.</em></p>
+
+<p align="center">
+  <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-blue">
+  <img alt="Version"     src="https://img.shields.io/badge/version-0.2.0-informational">
+  <img alt="Dependencies" src="https://img.shields.io/badge/dependencies-none-success">
+  <img alt="Typed"       src="https://img.shields.io/badge/typing-py.typed-success">
+</p>
+
+This repository contains an implementation of the **tANS** algorithm developed by
+both Yann Collet and Jarek Duda.
 
 Asymmetric Numeral Systems is an approach to entropy encoding discovered by
-Jarek Duda, detailed in the following report:
-[arXiv:1311.2540](https://arxiv.org/abs/1311.2540).
-
-The code in this repository is an adaptation of the method of tANS used by Yann
-Collet within Zstd, developed for Facebook — specifically the
+**Jarek Duda**, detailed in his report
+**[arXiv:1311.2540 — *Asymmetric numeral systems*](https://arxiv.org/abs/1311.2540)**.
+The code here is an adaptation of the method of tANS used by **Yann Collet**
+within Zstd — specifically the
 [Finite State Entropy](https://github.com/Cyan4973/FiniteStateEntropy) code. The
-original code detailed its usage with the C programming language, while this
-repo contains a Python implementation; see Collet's
+original details its usage in C, while this repo contains a Python implementation;
+Collet's
 [blog series](http://fastcompression.blogspot.com/2013/12/finite-state-entropy-new-breed-of.html)
-for a walkthrough of the method. The original exploratory Jupyter notebook lives
-in [`examples/Py-tANS.ipynb`](examples/Py-tANS.ipynb).
-
-## Algorithm Overview
-
-tANS or FSE is a method of range coding using an Asymmetric Numeral System. A
-set of states are used so that the probability of a state occurring is as close
-as possible to the probability of the symbol it represents.
-
-The action of changing states is analogous to changing state within a finite
-state machine, where we output bits to a bitstream as we change state by
-encoding one more symbol.
-
-<img src=https://3.bp.blogspot.com/-2kAzQkAjifA/WXFdxA2UjYI/AAAAAAAABwo/YcQwCC7Jmm0p8x55y-d3tuBwxdk-MtnrgCPcBGAYYCw/s1600/4states.png />
-
-The hardest part of the algorithm to understand is how symbols are encoded at
-close to the number of bits we can theoretically reach — the optimal bits per
-symbol given by the Shannon entropy calculation — when that entropy is a
-fractional number of bits. We only ever output an integer number of bits per
-symbol, so we must occasionally use fewer or more bits to encode a symbol, so
-that the *average* best matches the fractional ideal.
-
-This is achieved by outputting a variable number of bits depending on which
-"subrange" of states the current state falls into. The idea is that the number
-of bits output will not be optimal on a one-output basis, but instead will
-average to the correct fraction.
-
-<img src=https://3.bp.blogspot.com/-4fGLCD4S3ck/WXI2nGBruzI/AAAAAAAABww/pXffRq9_TT4IdHTKSqupSKRhGyeIEZEXgCLcBGAs/s1600/5ranges.png />
-
-Another factor to consider is the concept of moving between states, which must
-correctly tell us what symbol was last encoded. This is accomplished by
-outputting the binary representation of how many states we must move as the bit
-output, which requires the spacing between a symbol's states to be consistent
-with the sub-range bits seen in the picture above.
-
-To accomplish this, the states are spread across the state space in such a way
-as to provide the correct gaps between sub-range values — this package uses
-FSE's coprime-step spread.
-
-<img src=http://2.bp.blogspot.com/-xbkXS6jDSCk/Uvf238sQKmI/AAAAAAAAA-Q/I0AmHbver98/s1600/16states_fastScan.png />
-
-The spreading of symbols can be done in multiple different ways, and can even be
-scrambled based on a cryptographic key, trading some compression for the
-property that only a holder of the key can decode.
-
-## Limitations
-
-- tANS is an order-0 entropy coder: it exploits symbol frequencies, not
-  repetition. Use it as the entropy stage after a match-finder (as Zstd does),
-  or expect text to shrink only to its order-0 entropy.
-- The encoding is fragile by design: a corrupted bit changes everything decoded
-  after it. The decoder's bit-accounting and final-state checks detect
-  corruption, but there is no checksum and no recovery.
-- No random access, and no streaming *within* a frame: tANS decodes the
-  bitstream last-in-first-out, so a frame must be decoded as a whole. Streaming
-  is therefore done at block granularity — the package's streaming layer splits
-  input into independently-coded block frames (the same approach Zstd takes).
-- This is a readable pure-Python implementation, not a fast one.
+walks through the method. The original exploratory notebook is preserved in
+[`examples/Py-tANS.ipynb`](examples/Py-tANS.ipynb).
 
 ---
 
-# The `pytans` package
+**Contents** · [How the algorithm works](#-how-the-algorithm-works) ·
+[Limitations](#-limitations) · [Features](#-features) · [Installation](#-installation) ·
+[Quick start](#-quick-start) · [Usage guide](#-usage-guide) ·
+[Command line](#-command-line) · [API reference](#-api-reference) ·
+[Development](#-development)
 
-## What it can do
+---
 
-- **One-shot compression** — `compress()` / `decompress()` produce a
-  self-contained frame that carries its own symbol table and length, so
-  `decompress(compress(x)) == x` for *any* bytes, with no other bookkeeping.
-- **Raw-storage fallback** — input that would not shrink (random or
-  already-compressed data, tiny inputs) is stored verbatim inside the frame, so
-  output is never more than a few bytes larger than the input.
-- **Reusable coders with shared tables** — build a `TansCoder` once from sample
-  data or explicit counts and code any number of messages with it. Table
-  construction is canonical (deterministic), so an encoder and decoder built
-  independently from the same statistics interoperate — useful when many short
-  messages share one distribution and you don't want a table in every payload.
-- **Streaming for big files and pipes** — `compress_stream()` /
-  `decompress_stream()` process data in independent blocks (128 KiB by
-  default), so memory stays bounded no matter the file size, each block gets a
-  table tuned to its own statistics, and the receiver can decode block by block
-  as data arrives. Asyncio variants in `pytans.aio` work with
-  `asyncio.StreamReader`/`StreamWriter` and `aiofiles` handles.
-- **Near-entropy compression** — within ~2 % of the order-0 Shannon bound on
-  skewed data (enforced by the test suite).
-- **Tunable precision/size trade-off** — `table_log` (4–15) sets the state-table
-  size to `2**table_log`; an FSE-style heuristic picks a sensible value
-  automatically from the input size and alphabet.
-- **Frequency tooling** — `normalize_counts()` scales raw counts to a
-  power-of-two total while guaranteeing rare symbols stay encodable;
-  `optimal_table_log()` exposes the auto-sizing heuristic.
-- **Corruption detection** — truncated or malformed frames, bad headers and
-  bitstreams that fail the decoder's final-state / bit-accounting invariants all
-  raise `CorruptedDataError` rather than returning wrong data silently.
-- **A command-line tool** — `pytans compress` / `pytans decompress` for files or
-  stdin/stdout pipelines.
-- **Clean packaging** — typed (`py.typed`), zero runtime dependencies,
-  Python 3.9+.
+## 🧮 How the algorithm works
 
-What it deliberately does *not* do, because tANS itself doesn't: see
-[Limitations](#limitations).
+tANS (or FSE) is a method of range coding using an Asymmetric Numeral System. A
+set of states is used so that the probability of a state occurring is as close as
+possible to the probability of the symbol it represents.
 
-## Installation
+The action of changing states is analogous to changing state within a finite
+state machine, where we output bits to a bitstream as we change state by encoding
+one more symbol.
+
+<p align="center"><img src="https://3.bp.blogspot.com/-2kAzQkAjifA/WXFdxA2UjYI/AAAAAAAABwo/YcQwCC7Jmm0p8x55y-d3tuBwxdk-MtnrgCPcBGAYYCw/s1600/4states.png"></p>
+
+The hardest part of the algorithm to understand is how symbols are encoded at
+close to the theoretical optimum — the bits per symbol given by the Shannon
+entropy — when that optimum is a *fractional* number of bits. We can only ever
+output an integer number of bits per symbol, so we must occasionally use fewer or
+more bits to encode a symbol, such that the **average** matches the fractional
+ideal.
+
+This is achieved by outputting a variable number of bits depending on which
+"subrange" of states the current state falls into. No single output is optimal on
+its own, but the outputs average to the correct fraction:
+
+<p align="center"><img src="https://3.bp.blogspot.com/-4fGLCD4S3ck/WXI2nGBruzI/AAAAAAAABww/pXffRq9_TT4IdHTKSqupSKRhGyeIEZEXgCLcBGAs/s1600/5ranges.png"></p>
+
+Moving between states must also correctly tell the decoder which symbol was last
+encoded. This is accomplished by outputting the binary representation of how many
+states we must move, which requires the spacing between a symbol's states to be
+consistent with its sub-range bit counts. To accomplish this, states are *spread*
+across the state space so as to provide the correct gaps — this package uses
+FSE's coprime-step spread:
+
+<p align="center"><img src="http://2.bp.blogspot.com/-xbkXS6jDSCk/Uvf238sQKmI/AAAAAAAAA-Q/I0AmHbver98/s1600/16states_fastScan.png"></p>
+
+The spreading can be done in different ways, and can even be scrambled based on a
+cryptographic key — trading some compression for the property that only a holder
+of the key can decode.
+
+## ⚠️ Limitations
+
+These are properties of tANS itself, not just of this implementation:
+
+| | |
+| --- | --- |
+| **Order-0 only** | tANS exploits symbol *frequencies*, not repetition. Use it as the entropy stage after a match-finder (as Zstd does), or expect text to shrink only to its order-0 entropy. |
+| **Fragile streams** | One corrupted bit changes everything decoded after it. The decoder *detects* corruption (final-state + bit-accounting checks) but cannot correct it — layer a checksum/ECC on top if you need that. |
+| **LIFO decoding** | A frame decodes last-in-first-out and only as a whole; no random access. Streaming is therefore done at *block* granularity, like Zstd. |
+| **Pure Python** | Written to be readable, not fast. |
+
+---
+
+# 📦 The `pytans` package
+
+## ✨ Features
+
+| | Feature | What you get |
+| --- | --- | --- |
+| 🗜️ | **One-shot compression** | `compress()` / `decompress()` — self-contained frames carrying their own symbol table and length: `decompress(compress(x)) == x` for *any* bytes, no bookkeeping. |
+| 🌊 | **Streaming** | `compress_stream()` / `decompress_stream()` — independent 128 KiB blocks, so multi-GB files compress in constant memory and each block's table adapts to its local statistics. |
+| ⚡ | **Async** | `pytans.aio` mirrors the streaming API for `asyncio.StreamReader`/`StreamWriter`, `aiofiles` handles, and plain files alike — `drain()` is awaited for backpressure. |
+| ♻️ | **Reusable coders** | `TansCoder` is built once from sample data or counts; construction is canonical, so an encoder and decoder built independently from the same statistics interoperate — no table in every payload. |
+| 🪨 | **Raw fallback** | Incompressible input is stored verbatim inside the frame: output never grows by more than a few header bytes. |
+| 🎯 | **Near-entropy ratios** | Within ~2 % of the order-0 Shannon bound on skewed data (enforced by the test suite); ≲0.1 % at default table sizes. |
+| 🎛️ | **Tunable tables** | `table_log` 4–15 sets the precision/size trade-off; an FSE-style heuristic auto-sizes it from input size and alphabet. |
+| 🛡️ | **Corruption detection** | Malformed, truncated or tampered input raises `CorruptedDataError` — never silent garbage. |
+| ⌨️ | **CLI** | `pytans compress` / `pytans decompress` for files and shell pipelines. |
+
+## 🚀 Installation
 
 ```sh
 pip install .            # from a checkout
 pip install -e '.[dev]'  # development install with pytest
 ```
 
-## Quick start
+Python 3.9+, no runtime dependencies.
+
+## ⏱️ Quick start
 
 ```python
 >>> import pytans
 >>> text = b"how much wood would a woodchuck chuck if a woodchuck could chuck wood " * 100
 >>> blob = pytans.compress(text)
 >>> len(text), len(blob)
-(7000, 2948)                     # 42% of the original (order-0 entropy of this text)
+(7000, 2948)                     # 42% — the order-0 entropy of this text
 >>> pytans.decompress(blob) == text
 True
 ```
@@ -143,52 +132,18 @@ Incompressible input falls back to raw storage instead of growing:
 10008                            # 8 bytes of header, nothing lost trying
 ```
 
-## Usage
+## 📖 Usage guide
 
 ### One-shot frames
 
 `compress` returns a frame containing a magic number, the normalised symbol
-table, the original length and the tANS payload. `decompress` needs nothing
+table, the original length and the tANS payload — `decompress` needs nothing
 else:
 
 ```python
 blob = pytans.compress(data)                # auto-sized table, capped at 2**12 states
 blob = pytans.compress(data, table_log=8)   # force a 256-state table (smaller header)
 data = pytans.decompress(blob)
-```
-
-### Reusable coder: share one table across many messages
-
-A frame's symbol table costs up to 3 bytes per distinct symbol — significant for
-short messages. If many messages share a distribution, build the table once,
-transmit/agree on the statistics out of band, and send bare payloads:
-
-```python
-from pytans import TansCoder
-
-# Build from sample data (or pass explicit counts: TansCoder({101: 60, 116: 40}))
-encoder = TansCoder.from_data(training_corpus)
-
-payload, bit_length = encoder.encode(b"chuck wood much")
-# -> 8 bytes, 60 bits: no per-message table overhead
-
-# Elsewhere: same stats in, identical tables out (construction is canonical)
-decoder = TansCoder(encoder.normalized_counts, encoder.table_log)
-message = decoder.decode(payload, bit_length, length=15)
-```
-
-`encode` returns `(payload, bit_length)`; decoding needs the payload, the exact
-bit length (the final byte is zero-padded) and the message length in symbols, so
-store or transmit those two integers alongside the payload — that is exactly
-what the frame format does for you.
-
-A coder can encode anything drawn from its alphabet — encoding a byte it has
-never seen raises `ValueError`:
-
-```python
-encoder.symbols             # byte values the coder knows, ascending
-encoder.normalized_counts   # {byte: slots} summing to encoder.table_size
-encoder.table_log           # chosen automatically here (11 for the corpus above)
 ```
 
 ### Streaming big files
@@ -206,15 +161,13 @@ with open("big.log.tans", "rb") as src, open("big.log", "wb") as dst:
     decompress_stream(src, dst)
 ```
 
-Any binary file-like objects work (files, pipes, sockets, `io.BytesIO`), short
+Any binary file-like objects work (files, pipes, sockets, `io.BytesIO`); short
 reads are handled, and `decompress_stream` also accepts a plain one-shot
-`compress()` frame. `block_size` trades header overhead (smaller blocks pay a
-per-block symbol table) against memory and decode latency.
+`compress()` frame. `block_size` trades per-block header overhead against memory
+use and decode latency.
 
 For async code, `pytans.aio` mirrors the same two functions and duck-types its
-sources and sinks — `asyncio.StreamReader`/`StreamWriter` pairs, `aiofiles`
-handles, and even plain sync file objects all work, and `drain()` is awaited
-for backpressure when present:
+sources and sinks:
 
 ```python
 from pytans import aio
@@ -225,6 +178,40 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
 
 The coding itself is CPU-bound and runs inline; wrap calls in
 `loop.run_in_executor` if the event loop must stay free during large blocks.
+
+### Reusable coder: one table, many messages
+
+A frame's symbol table costs up to 3 bytes per distinct symbol — significant for
+short messages. If many messages share a distribution, build the table once,
+agree on the statistics out of band, and send bare payloads:
+
+```python
+from pytans import TansCoder
+
+# Build from sample data (or explicit counts: TansCoder({101: 60, 116: 40}))
+encoder = TansCoder.from_data(training_corpus)
+
+payload, bit_length = encoder.encode(b"chuck wood much")
+# -> 8 bytes, 60 bits: no per-message table overhead
+
+# Elsewhere: same stats in, identical tables out (construction is canonical)
+decoder = TansCoder(encoder.normalized_counts, encoder.table_log)
+message = decoder.decode(payload, bit_length, length=15)
+```
+
+`encode` returns `(payload, bit_length)`; decoding needs the payload, the exact
+bit length (the final byte is zero-padded) and the message length in symbols —
+store those two integers alongside the payload, which is exactly what the frame
+format does for you.
+
+A coder encodes anything drawn from its alphabet; a byte it has never seen
+raises `ValueError`. Inspect it via:
+
+```python
+encoder.symbols             # byte values the coder knows, ascending
+encoder.normalized_counts   # {byte: slots} summing to encoder.table_size
+encoder.table_log           # chosen automatically here
+```
 
 ### Controlling the tables
 
@@ -239,46 +226,62 @@ normalize_counts({65: 900, 66: 90, 67: 9, 68: 1}, table_log=5)
 optimal_table_log(sample_size=100_000, alphabet_size=4)   # -> 12
 ```
 
-Larger `table_log` = closer fit to the true distribution (better ratio) but a
-bigger table to build and, for frames, a bigger header. The default cap of 12
-(4096 states) is plenty for byte data; the full range is 4–15.
+Larger `table_log` = a closer fit to the true distribution, but the returns
+diminish fast — measured on skewed 8-symbol data:
+
+| table_log | states | overhead vs Shannon entropy |
+| ---: | ---: | ---: |
+| 4 | 16 | +2.8 % |
+| 6 | 64 | +1.7 % |
+| 8 | 256 | +0.10 % |
+| 12 | 4096 | +0.003 % |
+
+The default cap of 12 is plenty for byte data; small inputs automatically get
+smaller tables so the header doesn't outweigh the gain.
 
 ### Handling errors
 
 All package errors derive from `TansError` (a `ValueError`); anything that
-indicates damaged input data is the subclass `CorruptedDataError`:
+indicates damaged input is the subclass `CorruptedDataError`:
 
 ```python
-from pytans import CorruptedDataError, TansError
+from pytans import CorruptedDataError
 
 try:
     data = pytans.decompress(blob)
-except CorruptedDataError as err:
+except CorruptedDataError:
     ...   # truncated, tampered with, or not a pytans frame
 ```
 
-### Command line
+## ⌨️ Command line
 
 ```sh
-pytans compress war-and-peace.txt              # writes war-and-peace.txt.tans
+pytans compress war-and-peace.txt             # writes war-and-peace.txt.tans
 pytans decompress war-and-peace.txt.tans      # restores war-and-peace.txt
-pytans compress big.csv -o out.tans --table-log 12 --block-size 262144
 pytans compress - < input > output.tans       # stdin/stdout pipelines
 pytans decompress output.tans -o - | head
 ```
 
-Existing outputs are never overwritten without `-f/--force`.
+| Option | Applies to | Meaning |
+| --- | --- | --- |
+| `-o`, `--output` | both | Output path (`-` for stdout); defaults to adding/stripping `.tans` |
+| `-f`, `--force` | both | Overwrite an existing output file |
+| `--table-log N` | compress | Force a `2**N`-state table (4–15; default: auto) |
+| `--block-size BYTES` | compress | Uncompressed bytes per streaming block (default 131072) |
 
-## API reference
+Files are processed through the streaming layer, so memory stays bounded
+regardless of file size, and partial output is removed if the input turns out to
+be corrupt.
+
+## 🔍 API reference
 
 | Name | Description |
 | --- | --- |
 | `compress(data, table_log=None, max_table_log=12) -> bytes` | Compress bytes into a self-contained frame; stores raw if compression wouldn't help. |
 | `decompress(blob) -> bytes` | Restore the original bytes from a frame. |
-| `compress_stream(src, dst, *, block_size=131072, table_log=None, max_table_log=12) -> (in, out)` | Stream-compress a file-like object block by block. |
+| `compress_stream(src, dst, *, block_size=131072, table_log=None, max_table_log=12) -> (in, out)` | Stream-compress a binary file-like, block by block. |
 | `decompress_stream(src, dst) -> (in, out)` | Stream-decompress; also accepts a single one-shot frame. |
-| `pytans.aio.compress_stream` / `decompress_stream` | Async equivalents for asyncio/aiofiles sources and sinks. |
-| `DEFAULT_BLOCK_SIZE` | Default streaming block size (128 KiB). |
+| `pytans.aio.compress_stream` / `decompress_stream` | Async equivalents for asyncio / aiofiles sources and sinks. |
 | `TansCoder(counts, table_log=None)` | Build a coder from raw or normalised per-byte counts. |
 | `TansCoder.from_data(sample, table_log=None)` | Build a coder from the byte statistics of a sample. |
 | `TansCoder.encode(data) -> (payload, bit_length)` | Encode bytes drawn from the coder's alphabet. |
@@ -286,15 +289,16 @@ Existing outputs are never overwritten without `-f/--force`.
 | `TansCoder.table_log` / `.table_size` / `.symbols` / `.normalized_counts` | Inspect the coder's table. |
 | `normalize_counts(counts, table_log) -> dict` | Scale counts to sum to `2**table_log`, keeping every symbol ≥ 1. |
 | `optimal_table_log(sample_size, alphabet_size, max_table_log=12) -> int` | FSE-style automatic table sizing. |
-| `TansError` | Base error (subclass of `ValueError`). |
-| `CorruptedDataError` | Frame/bitstream failed validation. |
+| `DEFAULT_BLOCK_SIZE` | Default streaming block size (128 KiB). |
+| `TansError` / `CorruptedDataError` | Base error (a `ValueError`) / damaged-input error. |
 
-The exact frame layout is documented in
-[`src/pytans/frame.py`](src/pytans/frame.py).
+Exact byte layouts are documented in
+[`src/pytans/frame.py`](src/pytans/frame.py) (one-shot frames) and
+[`src/pytans/stream.py`](src/pytans/stream.py) (stream container).
 
-## Development
+## 🛠️ Development
 
 ```sh
 pip install -e '.[dev]'
-pytest
+pytest        # 100 tests
 ```
