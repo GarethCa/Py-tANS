@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pytans"
-version = "0.1.0"
+version = "0.2.0"
 description = "Pure-Python tabled Asymmetric Numeral Systems (tANS / FSE-style) entropy coder"
 readme = "README.md"
 requires-python = ">=3.9"
