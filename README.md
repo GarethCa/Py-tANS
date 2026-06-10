@@ -12,63 +12,174 @@ stage of Zstandard) — see his
 for a walkthrough. The original exploratory Jupyter notebook lives in
 [`examples/Py-tANS.ipynb`](examples/Py-tANS.ipynb).
 
+## What it can do
+
+- **One-shot compression** — `compress()` / `decompress()` produce a
+  self-contained frame that carries its own symbol table and length, so
+  `decompress(compress(x)) == x` for *any* bytes, with no other bookkeeping.
+- **Raw-storage fallback** — input that would not shrink (random or
+  already-compressed data, tiny inputs) is stored verbatim inside the frame, so
+  output is never more than a few bytes larger than the input.
+- **Reusable coders with shared tables** — build a `TansCoder` once from sample
+  data or explicit counts and code any number of messages with it. Table
+  construction is canonical (deterministic), so an encoder and decoder built
+  independently from the same statistics interoperate — useful when many short
+  messages share one distribution and you don't want a table in every payload.
+- **Near-entropy compression** — within ~2 % of the order-0 Shannon bound on
+  skewed data (enforced by the test suite).
+- **Tunable precision/size trade-off** — `table_log` (4–15) sets the state-table
+  size to `2**table_log`; an FSE-style heuristic picks a sensible value
+  automatically from the input size and alphabet.
+- **Frequency tooling** — `normalize_counts()` scales raw counts to a power-of-two
+  total while guaranteeing rare symbols stay encodable; `optimal_table_log()`
+  exposes the auto-sizing heuristic.
+- **Corruption detection** — truncated or malformed frames, bad headers and
+  bitstreams that fail the decoder's final-state / bit-accounting invariants all
+  raise `CorruptedDataError` rather than returning wrong data silently.
+- **A command-line tool** — `pytans compress` / `pytans decompress` for files or
+  stdin/stdout pipelines.
+- **Clean packaging** — typed (`py.typed`), zero runtime dependencies,
+  Python 3.9+.
+
+What it deliberately does *not* do, because tANS itself doesn't: see
+[Limitations](#limitations).
+
 ## Installation
 
 ```sh
-pip install .          # from a checkout
+pip install .            # from a checkout
 pip install -e '.[dev]'  # development install with pytest
 ```
 
-Requires Python 3.9+. No runtime dependencies.
+## Quick start
+
+```python
+>>> import pytans
+>>> text = b"how much wood would a woodchuck chuck if a woodchuck could chuck wood " * 100
+>>> blob = pytans.compress(text)
+>>> len(text), len(blob)
+(7000, 2948)                     # 42% of the original (order-0 entropy of this text)
+>>> pytans.decompress(blob) == text
+True
+```
+
+Incompressible input falls back to raw storage instead of growing:
+
+```python
+>>> import random
+>>> noise = random.Random(0).randbytes(10_000)
+>>> len(pytans.compress(noise))
+10008                            # 8 bytes of header, nothing lost trying
+```
 
 ## Usage
 
-### One-shot compression
+### One-shot frames
 
-`compress` produces a self-contained frame: the symbol table, original length and
-payload travel together, and incompressible input is stored raw so output is never
-much larger than the input.
+`compress` returns a frame containing a magic number, the normalised symbol
+table, the original length and the tANS payload. `decompress` needs nothing else:
 
 ```python
-import pytans
-
-blob = pytans.compress(b"how much wood would a woodchuck chuck" * 100)
+blob = pytans.compress(data)                # auto-sized table, capped at 2**12 states
+blob = pytans.compress(data, table_log=8)   # force a 256-state table (smaller header)
 data = pytans.decompress(blob)
 ```
 
-### Reusable coder (shared tables)
+### Reusable coder: share one table across many messages
 
-When many short messages share one symbol distribution, build the table once and
-ship only the payloads — the decoder rebuilds an identical table from the same
-statistics, since table construction is canonical.
+A frame's symbol table costs up to 3 bytes per distinct symbol — significant for
+short messages. If many messages share a distribution, build the table once,
+transmit/agree on the statistics out of band, and send bare payloads:
 
 ```python
 from pytans import TansCoder
 
-encoder = TansCoder.from_data(training_sample)            # or TansCoder(counts)
-payload, bit_length = encoder.encode(message)
+# Build from sample data (or pass explicit counts: TansCoder({101: 60, 116: 40}))
+encoder = TansCoder.from_data(training_corpus)
 
+payload, bit_length = encoder.encode(b"chuck wood much")
+# -> 8 bytes, 60 bits: no per-message table overhead
+
+# Elsewhere: same stats in, identical tables out (construction is canonical)
 decoder = TansCoder(encoder.normalized_counts, encoder.table_log)
-message = decoder.decode(payload, bit_length, len(message))
+message = decoder.decode(payload, bit_length, length=15)
 ```
 
-`table_log` controls the state-table size (`2**table_log` states, 4–15): larger
-tables track the symbol distribution more precisely at the cost of a larger
-table/header.
+`encode` returns `(payload, bit_length)`; decoding needs the payload, the exact
+bit length (the final byte is zero-padded) and the message length in symbols, so
+store or transmit those two integers alongside the payload — that is exactly what
+the frame format does for you.
+
+A coder can encode anything drawn from its alphabet — encoding a byte it has
+never seen raises `ValueError`:
+
+```python
+encoder.symbols             # byte values the coder knows, ascending
+encoder.normalized_counts   # {byte: slots} summing to encoder.table_size
+encoder.table_log           # chosen automatically here (11 for the corpus above)
+```
+
+### Controlling the tables
+
+```python
+from pytans import normalize_counts, optimal_table_log
+
+# Scale raw counts to sum to 2**table_log; rare symbols never drop to zero.
+normalize_counts({65: 900, 66: 90, 67: 9, 68: 1}, table_log=5)
+# -> {65: 28, 66: 2, 67: 1, 68: 1}
+
+# The auto-sizing heuristic: bigger inputs and alphabets earn bigger tables.
+optimal_table_log(sample_size=100_000, alphabet_size=4)   # -> 12
+```
+
+Larger `table_log` = closer fit to the true distribution (better ratio) but a
+bigger table to build and, for frames, a bigger header. The default cap of 12
+(4096 states) is plenty for byte data; the full range is 4–15.
+
+### Handling errors
+
+All package errors derive from `TansError` (a `ValueError`); anything that
+indicates damaged input data is the subclass `CorruptedDataError`:
+
+```python
+from pytans import CorruptedDataError, TansError
+
+try:
+    data = pytans.decompress(blob)
+except CorruptedDataError as err:
+    ...   # truncated, tampered with, or not a pytans frame
+```
 
 ### Command line
 
 ```sh
-pytans compress war-and-peace.txt            # writes war-and-peace.txt.tans
-pytans decompress war-and-peace.txt.tans
-pytans compress - < input > output.tans      # stdin/stdout
+pytans compress war-and-peace.txt              # writes war-and-peace.txt.tans
+pytans decompress war-and-peace.txt.tans      # restores war-and-peace.txt
+pytans compress big.csv -o out.tans --table-log 12
+pytans compress - < input > output.tans       # stdin/stdout pipelines
+pytans decompress output.tans -o - | head
 ```
 
-### Errors
+Existing outputs are never overwritten without `-f/--force`.
 
-Malformed frames, truncated payloads and failed integrity checks raise
-`pytans.CorruptedDataError`; all package errors derive from `pytans.TansError`
-(a `ValueError`).
+## API reference
+
+| Name | Description |
+| --- | --- |
+| `compress(data, table_log=None, max_table_log=12) -> bytes` | Compress bytes into a self-contained frame; stores raw if compression wouldn't help. |
+| `decompress(blob) -> bytes` | Restore the original bytes from a frame. |
+| `TansCoder(counts, table_log=None)` | Build a coder from raw or normalised per-byte counts. |
+| `TansCoder.from_data(sample, table_log=None)` | Build a coder from the byte statistics of a sample. |
+| `TansCoder.encode(data) -> (payload, bit_length)` | Encode bytes drawn from the coder's alphabet. |
+| `TansCoder.decode(payload, bit_length, length) -> bytes` | Decode `length` symbols; validates stream integrity. |
+| `TansCoder.table_log` / `.table_size` / `.symbols` / `.normalized_counts` | Inspect the coder's table. |
+| `normalize_counts(counts, table_log) -> dict` | Scale counts to sum to `2**table_log`, keeping every symbol ≥ 1. |
+| `optimal_table_log(sample_size, alphabet_size, max_table_log=12) -> int` | FSE-style automatic table sizing. |
+| `TansError` | Base error (subclass of `ValueError`). |
+| `CorruptedDataError` | Frame/bitstream failed validation. |
+
+The exact frame layout is documented in
+[`src/pytans/frame.py`](src/pytans/frame.py).
 
 ## Algorithm Overview
 
