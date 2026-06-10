@@ -35,6 +35,7 @@ MAGIC = b"tANS"
 VERSION = 1
 _MODE_RAW = 0
 _MODE_TANS = 1
+_MODE_STREAM = 2  # sequence of block frames; see pytans.stream
 
 
 def _write_uvarint(value: int) -> bytes:

@@ -67,8 +67,10 @@ property that only a holder of the key can decode.
 - The encoding is fragile by design: a corrupted bit changes everything decoded
   after it. The decoder's bit-accounting and final-state checks detect
   corruption, but there is no checksum and no recovery.
-- No random access or streaming: tANS decodes the bitstream last-in-first-out,
-  so a frame must be decoded as a whole.
+- No random access, and no streaming *within* a frame: tANS decodes the
+  bitstream last-in-first-out, so a frame must be decoded as a whole. Streaming
+  is therefore done at block granularity — the package's streaming layer splits
+  input into independently-coded block frames (the same approach Zstd takes).
 - This is a readable pure-Python implementation, not a fast one.
 
 ---
@@ -88,6 +90,12 @@ property that only a holder of the key can decode.
   construction is canonical (deterministic), so an encoder and decoder built
   independently from the same statistics interoperate — useful when many short
   messages share one distribution and you don't want a table in every payload.
+- **Streaming for big files and pipes** — `compress_stream()` /
+  `decompress_stream()` process data in independent blocks (128 KiB by
+  default), so memory stays bounded no matter the file size, each block gets a
+  table tuned to its own statistics, and the receiver can decode block by block
+  as data arrives. Asyncio variants in `pytans.aio` work with
+  `asyncio.StreamReader`/`StreamWriter` and `aiofiles` handles.
 - **Near-entropy compression** — within ~2 % of the order-0 Shannon bound on
   skewed data (enforced by the test suite).
 - **Tunable precision/size trade-off** — `table_log` (4–15) sets the state-table
@@ -183,6 +191,41 @@ encoder.normalized_counts   # {byte: slots} summing to encoder.table_size
 encoder.table_log           # chosen automatically here (11 for the corpus above)
 ```
 
+### Streaming big files
+
+The streaming layer chops input into blocks and writes one self-contained frame
+per block, so a multi-gigabyte file compresses in constant memory:
+
+```python
+from pytans import compress_stream, decompress_stream
+
+with open("big.log", "rb") as src, open("big.log.tans", "wb") as dst:
+    bytes_in, bytes_out = compress_stream(src, dst)        # block_size=128 KiB
+
+with open("big.log.tans", "rb") as src, open("big.log", "wb") as dst:
+    decompress_stream(src, dst)
+```
+
+Any binary file-like objects work (files, pipes, sockets, `io.BytesIO`), short
+reads are handled, and `decompress_stream` also accepts a plain one-shot
+`compress()` frame. `block_size` trades header overhead (smaller blocks pay a
+per-block symbol table) against memory and decode latency.
+
+For async code, `pytans.aio` mirrors the same two functions and duck-types its
+sources and sinks — `asyncio.StreamReader`/`StreamWriter` pairs, `aiofiles`
+handles, and even plain sync file objects all work, and `drain()` is awaited
+for backpressure when present:
+
+```python
+from pytans import aio
+
+async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    await aio.decompress_stream(reader, writer)
+```
+
+The coding itself is CPU-bound and runs inline; wrap calls in
+`loop.run_in_executor` if the event loop must stay free during large blocks.
+
 ### Controlling the tables
 
 ```python
@@ -219,7 +262,7 @@ except CorruptedDataError as err:
 ```sh
 pytans compress war-and-peace.txt              # writes war-and-peace.txt.tans
 pytans decompress war-and-peace.txt.tans      # restores war-and-peace.txt
-pytans compress big.csv -o out.tans --table-log 12
+pytans compress big.csv -o out.tans --table-log 12 --block-size 262144
 pytans compress - < input > output.tans       # stdin/stdout pipelines
 pytans decompress output.tans -o - | head
 ```
@@ -232,6 +275,10 @@ Existing outputs are never overwritten without `-f/--force`.
 | --- | --- |
 | `compress(data, table_log=None, max_table_log=12) -> bytes` | Compress bytes into a self-contained frame; stores raw if compression wouldn't help. |
 | `decompress(blob) -> bytes` | Restore the original bytes from a frame. |
+| `compress_stream(src, dst, *, block_size=131072, table_log=None, max_table_log=12) -> (in, out)` | Stream-compress a file-like object block by block. |
+| `decompress_stream(src, dst) -> (in, out)` | Stream-decompress; also accepts a single one-shot frame. |
+| `pytans.aio.compress_stream` / `decompress_stream` | Async equivalents for asyncio/aiofiles sources and sinks. |
+| `DEFAULT_BLOCK_SIZE` | Default streaming block size (128 KiB). |
 | `TansCoder(counts, table_log=None)` | Build a coder from raw or normalised per-byte counts. |
 | `TansCoder.from_data(sample, table_log=None)` | Build a coder from the byte statistics of a sample. |
 | `TansCoder.encode(data) -> (payload, bit_length)` | Encode bytes drawn from the coder's alphabet. |

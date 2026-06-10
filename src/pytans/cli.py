@@ -1,4 +1,8 @@
-"""Command-line interface: ``pytans compress`` / ``pytans decompress``."""
+"""Command-line interface: ``pytans compress`` / ``pytans decompress``.
+
+Files are processed through the block-based streaming layer, so memory
+use stays bounded by the block size regardless of file size.
+"""
 
 from __future__ import annotations
 
@@ -7,27 +11,12 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from . import __version__, compress, decompress
+from . import __version__
 from .exceptions import TansError
+from .stream import DEFAULT_BLOCK_SIZE, compress_stream, decompress_stream
 from .tables import DEFAULT_MAX_TABLE_LOG, MAX_TABLE_LOG, MIN_TABLE_LOG
 
 SUFFIX = ".tans"
-
-
-def _read_input(path: str) -> bytes:
-    if path == "-":
-        return sys.stdin.buffer.read()
-    return Path(path).read_bytes()
-
-
-def _write_output(path: str, data: bytes, force: bool) -> None:
-    if path == "-":
-        sys.stdout.buffer.write(data)
-        return
-    target = Path(path)
-    if target.exists() and not force:
-        raise SystemExit(f"pytans: refusing to overwrite {target} (use --force)")
-    target.write_bytes(data)
 
 
 def _default_output(args: argparse.Namespace) -> str:
@@ -67,18 +56,41 @@ def main(argv: Optional[List[str]] = None) -> int:
                 help=f"state table size as a power of two (default: auto, "
                 f"at most {DEFAULT_MAX_TABLE_LOG})",
             )
+            cmd.add_argument(
+                "--block-size",
+                type=int,
+                default=DEFAULT_BLOCK_SIZE,
+                metavar="BYTES",
+                help=f"uncompressed bytes per block (default: {DEFAULT_BLOCK_SIZE})",
+            )
 
     args = parser.parse_args(argv)
     output = args.output or _default_output(args)
-    data = _read_input(args.input)
+    if output != "-" and Path(output).exists() and not args.force:
+        raise SystemExit(f"pytans: refusing to overwrite {output} (use --force)")
+
+    src = sys.stdin.buffer if args.input == "-" else open(args.input, "rb")
+    made_output_file = output != "-"
+    dst = sys.stdout.buffer if output == "-" else open(output, "wb")
     try:
         if args.command == "compress":
-            result = compress(data, table_log=args.table_log)
+            if args.block_size < 1:
+                raise SystemExit("pytans: --block-size must be at least 1")
+            compress_stream(
+                src, dst, block_size=args.block_size, table_log=args.table_log
+            )
         else:
-            result = decompress(data)
+            decompress_stream(src, dst)
     except TansError as exc:
+        if made_output_file:
+            dst.close()
+            Path(output).unlink(missing_ok=True)
         raise SystemExit(f"pytans: {exc}")
-    _write_output(output, result, args.force)
+    finally:
+        if src is not sys.stdin.buffer:
+            src.close()
+        if dst is not sys.stdout.buffer and not dst.closed:
+            dst.close()
     return 0
 
 
