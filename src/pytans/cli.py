@@ -15,6 +15,7 @@ from . import __version__
 from .exceptions import TansError
 from .stream import DEFAULT_BLOCK_SIZE, compress_stream, decompress_stream
 from .tables import DEFAULT_MAX_TABLE_LOG, MAX_TABLE_LOG, MIN_TABLE_LOG
+from .transforms import TRANSFORMS
 
 SUFFIX = ".tans"
 
@@ -63,6 +64,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 metavar="BYTES",
                 help=f"uncompressed bytes per block (default: {DEFAULT_BLOCK_SIZE})",
             )
+            cmd.add_argument(
+                "--transform",
+                choices=sorted(TRANSFORMS),
+                help="modeling stage for repetitive data; kept per block "
+                "only when it actually shrinks the output",
+            )
 
     args = parser.parse_args(argv)
     output = args.output or _default_output(args)
@@ -77,7 +84,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.block_size < 1:
                 raise SystemExit("pytans: --block-size must be at least 1")
             compress_stream(
-                src, dst, block_size=args.block_size, table_log=args.table_log
+                src,
+                dst,
+                block_size=args.block_size,
+                table_log=args.table_log,
+                transform=args.transform,
             )
         else:
             decompress_stream(src, dst)

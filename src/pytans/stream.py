@@ -28,6 +28,7 @@ from .frame import (
     _MODE_RAW,
     _MODE_STREAM,
     _MODE_TANS,
+    _MODE_TRANSFORM,
     _write_uvarint,
     compress,
     decompress,
@@ -82,11 +83,14 @@ def compress_stream(
     block_size: int = DEFAULT_BLOCK_SIZE,
     table_log: Optional[int] = None,
     max_table_log: int = DEFAULT_MAX_TABLE_LOG,
+    transform: Optional[str] = None,
 ) -> Tuple[int, int]:
     """Compress ``src`` into ``dst`` block by block.
 
     ``src``/``dst`` are binary file-like objects (open files, pipes,
-    ``io.BytesIO`` ...). Returns ``(bytes_read, bytes_written)``.
+    ``io.BytesIO`` ...). ``transform`` enables a per-block modeling stage
+    (``"bwt"`` or ``"lz77"``) for repetitive data. Returns
+    ``(bytes_read, bytes_written)``.
     """
     if block_size < 1:
         raise ValueError("block_size must be at least 1")
@@ -96,7 +100,7 @@ def compress_stream(
         block = _read_up_to(src, block_size)
         if not block:
             break
-        frame = compress(block, table_log, max_table_log)
+        frame = compress(block, table_log, max_table_log, transform=transform)
         dst.write(_write_uvarint(len(frame)) + frame)
         bytes_read += len(block)
         bytes_written += len(_write_uvarint(len(frame))) + len(frame)
@@ -117,7 +121,7 @@ def decompress_stream(src: BinaryIO, dst: BinaryIO) -> Tuple[int, int]:
         raise CorruptedDataError(f"unsupported version {header[4]}")
     mode = header[5]
 
-    if mode in (_MODE_RAW, _MODE_TANS):
+    if mode in (_MODE_RAW, _MODE_TANS, _MODE_TRANSFORM):
         # A one-shot pytans.compress() frame: by definition single-block.
         body = bytearray(header)
         while True:
