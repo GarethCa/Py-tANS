@@ -29,9 +29,9 @@ walks through the method. The original exploratory notebook is preserved in
 
 **Contents** · [How the algorithm works](#-how-the-algorithm-works) ·
 [Limitations](#-limitations) · [Features](#-features) · [Installation](#-installation) ·
-[Quick start](#-quick-start) · [Usage guide](#-usage-guide) ·
-[Command line](#-command-line) · [API reference](#-api-reference) ·
-[Development](#-development)
+[Quick start](#-quick-start) · [How it compares](#-how-it-compares) ·
+[Usage guide](#-usage-guide) · [Command line](#-command-line) ·
+[API reference](#-api-reference) · [Development](#-development)
 
 ---
 
@@ -131,6 +131,46 @@ Incompressible input falls back to raw storage instead of growing:
 >>> len(pytans.compress(noise))
 10008                            # 8 bytes of header, nothing lost trying
 ```
+
+## 📊 How it compares
+
+Compressed size as a percentage of the original (smaller is better), measured
+against Python's stdlib compressors across different kinds of data. *Floor* is
+the order-0 Shannon entropy of each input — the theoretical best any pure
+entropy coder can do:
+
+| Data | Size | Floor | **pytans** | zlib&nbsp;-9 | bz2&nbsp;-9 | lzma |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| English text (*War and Peace*) | 3.4 MB | 57.9 % | 58.1 % | 36.4 % | **26.4 %** | 27.8 % |
+| Python source code | 3.0 MB | 60.8 % | 58.9 % | 24.1 % | 20.1 % | **19.0 %** |
+| Sorted dictionary (`/usr/share/dict/words`) | 2.5 MB | 54.1 % | 52.7 % | 30.2 % | 34.4 % | **25.6 %** |
+| PCM audio (16-bit system sounds) | 4.8 MB | 72.1 % | 70.3 % | 64.5 % | 62.1 % | **48.3 %** |
+| JSON logs (synthetic) | 2.3 MB | 60.5 % | 60.6 % | 12.6 % | **9.7 %** | 10.4 % |
+| Skewed bytes, *no repetition* | 4.0 MB | 30.7 % | **30.7 %** | 36.8 % | 36.1 % | 34.0 % |
+| Random noise | 2.0 MB | 100 % | 100.0 % | 100.0 % | 100.4 % | 100.0 % |
+
+How to read this — it is really comparing two different jobs:
+
+- **pytans tracks the entropy floor everywhere** (sometimes slightly beating
+  the *global* floor, because per-block tables adapt to local statistics).
+  That is the whole job of an entropy coder, done at full efficiency.
+- **zlib/bz2/lzma are complete pipelines** — a *model* (LZ77 match-finding,
+  Burrows–Wheeler context sorting) feeding an entropy coder. On text, code,
+  logs and audio, almost all of their win comes from the modeling stage,
+  which tANS does not have. This is the order-0 limitation, not
+  implementation quality.
+- **When there is nothing to model, tANS wins.** The "skewed bytes" row has
+  frequency bias but zero repetition, reducing everyone to pure entropy
+  coding: pytans lands exactly on the floor while zlib pays Huffman's
+  integer-bit penalty (36.8 % vs 30.7 %) — precisely the gap described in
+  Duda's paper, and why Zstandard pairs its match-finder with FSE rather
+  than Huffman.
+- **On incompressible data everyone converges to ~100 %**; pytans's raw
+  fallback caps the overhead at a few header bytes.
+
+Speed is deliberately omitted: those are decades-tuned C libraries and this is
+readable pure Python (~3 MiB/s). In C, FSE famously *outruns* zlib's entropy
+stage — speed is the reason it exists.
 
 ## 📖 Usage guide
 
