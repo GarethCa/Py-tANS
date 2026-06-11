@@ -120,7 +120,7 @@ def pytans_ratio(data):
 
 def pytans_bwt_ratio(data):
     # Whole-buffer frame: gives the BWT full context, like bzip2's big blocks.
-    return len(compress(data, transform="bwt")) / len(data)
+    return len(compress(data, transform="bwt2")) / len(data)
 
 
 def main():
@@ -138,7 +138,7 @@ def main():
         ))
 
     print()
-    print("| Data | Size | Floor | pytans | pytans bwt | zlib -9 | bz2 -9 | lzma |")
+    print("| Data | Size | Floor | pytans | pytans bwt2 | zlib -9 | bz2 -9 | lzma |")
     print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for name, n, floor, pt, ptb, z, b, l in rows:
         cells = " | ".join(f"{v:.1%}".replace("%", " %") for v in (floor, pt, ptb, z, b, l))
