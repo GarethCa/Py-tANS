@@ -29,7 +29,7 @@ from collections import Counter
 from io import BytesIO
 from pathlib import Path
 
-from pytans import compress_stream
+from pytans import compress, compress_stream
 
 GUTENBERG_TEXT = "https://www.gutenberg.org/files/2600/2600-0.txt"  # War and Peace
 PY_SOURCE_BUDGET = 3_000_000
@@ -118,6 +118,11 @@ def pytans_ratio(data):
     return out.tell() / len(data)
 
 
+def pytans_bwt_ratio(data):
+    # Whole-buffer frame: gives the BWT full context, like bzip2's big blocks.
+    return len(compress(data, transform="bwt")) / len(data)
+
+
 def main():
     rows = []
     for name, data in build_corpora():
@@ -126,16 +131,17 @@ def main():
             len(data),
             entropy_floor(data),
             pytans_ratio(data),
+            pytans_bwt_ratio(data),
             len(zlib.compress(data, 9)) / len(data),
             len(bz2.compress(data, 9)) / len(data),
             len(lzma.compress(data)) / len(data),
         ))
 
     print()
-    print("| Data | Size | Floor | pytans | zlib -9 | bz2 -9 | lzma |")
-    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
-    for name, n, floor, pt, z, b, l in rows:
-        cells = " | ".join(f"{v:.1%}".replace("%", " %") for v in (floor, pt, z, b, l))
+    print("| Data | Size | Floor | pytans | pytans bwt | zlib -9 | bz2 -9 | lzma |")
+    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for name, n, floor, pt, ptb, z, b, l in rows:
+        cells = " | ".join(f"{v:.1%}".replace("%", " %") for v in (floor, pt, ptb, z, b, l))
         print(f"| {name} | {n / 1e6:.1f} MB | {cells} |")
 
 

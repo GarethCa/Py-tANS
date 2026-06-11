@@ -24,6 +24,7 @@ from .frame import (
     _MODE_RAW,
     _MODE_STREAM,
     _MODE_TANS,
+    _MODE_TRANSFORM,
     _write_uvarint,
     compress,
     decompress,
@@ -84,6 +85,7 @@ async def compress_stream(
     block_size: int = DEFAULT_BLOCK_SIZE,
     table_log: Optional[int] = None,
     max_table_log: int = DEFAULT_MAX_TABLE_LOG,
+    transform: Optional[str] = None,
 ) -> Tuple[int, int]:
     """Async equivalent of :func:`pytans.compress_stream`."""
     if block_size < 1:
@@ -94,7 +96,7 @@ async def compress_stream(
         block = await _read_up_to(src, block_size)
         if not block:
             break
-        frame = compress(block, table_log, max_table_log)
+        frame = compress(block, table_log, max_table_log, transform=transform)
         header = _write_uvarint(len(frame))
         await _write(dst, header + frame)
         bytes_read += len(block)
@@ -112,7 +114,7 @@ async def decompress_stream(src: Any, dst: Any) -> Tuple[int, int]:
         raise CorruptedDataError(f"unsupported version {header[4]}")
     mode = header[5]
 
-    if mode in (_MODE_RAW, _MODE_TANS):
+    if mode in (_MODE_RAW, _MODE_TANS, _MODE_TRANSFORM):
         body = bytearray(header)
         while True:
             chunk = await _maybe_await(src.read(DEFAULT_BLOCK_SIZE))

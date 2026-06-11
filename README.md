@@ -79,7 +79,7 @@ These are properties of tANS itself, not just of this implementation:
 
 | | |
 | --- | --- |
-| **Order-0 only** | tANS exploits symbol *frequencies*, not repetition. Use it as the entropy stage after a match-finder (as Zstd does), or expect text to shrink only to its order-0 entropy. |
+| **Order-0 only** | tANS exploits symbol *frequencies*, not repetition. The package offers opt-in BWT/LZ77 modeling transforms for repetitive data; without them, expect text to shrink only to its order-0 entropy. |
 | **Fragile streams** | One corrupted bit changes everything decoded after it. The decoder *detects* corruption (final-state + bit-accounting checks) but cannot correct it — layer a checksum/ECC on top if you need that. |
 | **LIFO decoding** | A frame decodes last-in-first-out and only as a whole; no random access. Streaming is therefore done at *block* granularity, like Zstd. |
 | **Pure Python** | Written to be readable, not fast. |
@@ -96,6 +96,7 @@ These are properties of tANS itself, not just of this implementation:
 | 🌊 | **Streaming** | `compress_stream()` / `decompress_stream()` — independent 128 KiB blocks, so multi-GB files compress in constant memory and each block's table adapts to its local statistics. |
 | ⚡ | **Async** | `pytans.aio` mirrors the streaming API for `asyncio.StreamReader`/`StreamWriter`, `aiofiles` handles, and plain files alike — `drain()` is awaited for backpressure. |
 | ♻️ | **Reusable coders** | `TansCoder` is built once from sample data or counts; construction is canonical, so an encoder and decoder built independently from the same statistics interoperate — no table in every payload. |
+| 🔁 | **Repetition transforms (opt-in)** | `transform="bwt"` (Burrows-Wheeler + MTF + RLE, bzip2's pipeline) or `transform="lz77"` (match-finding, zlib/zstd's shape) turn repetition into symbol skew tANS can use — text drops from 58 % to 27 %. Kept per block only when actually smaller. |
 | 🪨 | **Raw fallback** | Incompressible input is stored verbatim inside the frame: output never grows by more than a few header bytes. |
 | 🎯 | **Near-entropy ratios** | Within ~2 % of the order-0 Shannon bound on skewed data (enforced by the test suite); ≲0.1 % at default table sizes. |
 | 🎛️ | **Tunable tables** | `table_log` 4–15 sets the precision/size trade-off; an FSE-style heuristic auto-sizes it from input size and alphabet. |
@@ -139,15 +140,15 @@ against Python's stdlib compressors across different kinds of data. *Floor* is
 the order-0 Shannon entropy of each input — the theoretical best any pure
 entropy coder can do:
 
-| Data | Size | Floor | **pytans** | zlib&nbsp;-9 | bz2&nbsp;-9 | lzma |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| English text (*War and Peace*) | 3.4 MB | 57.9 % | 58.1 % | 36.4 % | **26.4 %** | 27.8 % |
-| Python source code | 3.0 MB | 56.6 % | 56.4 % | 22.9 % | 18.9 % | **18.3 %** |
-| Sorted dictionary (`/usr/share/dict/words`) | 2.5 MB | 54.1 % | 52.7 % | 30.2 % | 34.4 % | **25.6 %** |
-| PCM audio (16-bit system sounds) | 4.8 MB | 72.1 % | 70.3 % | 64.5 % | 62.1 % | **48.3 %** |
-| JSON logs (synthetic) | 2.3 MB | 60.5 % | 60.6 % | 12.6 % | **9.7 %** | 10.4 % |
-| Skewed bytes, *no repetition* | 4.0 MB | 30.7 % | **30.7 %** | 36.8 % | 36.1 % | 34.0 % |
-| Random noise | 2.0 MB | 100 % | 100.0 % | 100.0 % | 100.4 % | 100.0 % |
+| Data | Size | Floor | **pytans** | **pytans `bwt`** | zlib&nbsp;-9 | bz2&nbsp;-9 | lzma |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| English text (*War and Peace*) | 3.4 MB | 57.9 % | 58.1 % | 26.8 % | 36.4 % | **26.4 %** | 27.8 % |
+| Python source code | 3.0 MB | 56.6 % | 56.4 % | 20.1 % | 22.9 % | 18.9 % | **18.3 %** |
+| Sorted dictionary (`/usr/share/dict/words`) | 2.5 MB | 54.1 % | 52.7 % | 37.2 % | 30.2 % | 34.4 % | **25.6 %** |
+| PCM audio (16-bit system sounds) | 4.8 MB | 72.1 % | 70.3 % | 64.0 % | 64.5 % | 62.1 % | **48.3 %** |
+| JSON logs (synthetic) | 2.3 MB | 60.5 % | 60.6 % | 10.5 % | 12.6 % | **9.7 %** | 10.4 % |
+| Skewed bytes, *no repetition* | 4.0 MB | 30.7 % | **30.7 %** | **30.7 %** | 36.8 % | 36.1 % | 34.0 % |
+| Random noise | 2.0 MB | 100 % | 100.0 % | 100.0 % | 100.0 % | 100.4 % | 100.0 % |
 
 How to read this — it is really comparing two different jobs:
 
@@ -156,9 +157,11 @@ How to read this — it is really comparing two different jobs:
   That is the whole job of an entropy coder, done at full efficiency.
 - **zlib/bz2/lzma are complete pipelines** — a *model* (LZ77 match-finding,
   Burrows–Wheeler context sorting) feeding an entropy coder. On text, code,
-  logs and audio, almost all of their win comes from the modeling stage,
-  which tANS does not have. This is the order-0 limitation, not
-  implementation quality.
+  logs and audio, almost all of their win comes from the modeling stage.
+- **The opt-in transforms add that modeling stage**: `transform="bwt"`
+  (bzip2's recipe with tANS as the entropy coder) beats zlib everywhere
+  above and effectively ties bz2 on text; `transform="lz77"` is the
+  zstd shape and wins where LZ beats BWT (the sorted dictionary: 31.9 %).
 - **When there is nothing to model, tANS wins.** The "skewed bytes" row has
   frequency bias but zero repetition, reducing everyone to pure entropy
   coding: pytans lands exactly on the floor while zlib pays Huffman's
@@ -222,6 +225,31 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
 
 The coding itself is CPU-bound and runs inline; wrap calls in
 `loop.run_in_executor` if the event loop must stay free during large blocks.
+
+### Repetitive data: the BWT and LZ77 transforms
+
+Plain tANS cannot see repetition. The opt-in transforms reshape the input so
+repetition *becomes* symbol skew the entropy stage can exploit:
+
+```python
+blob = pytans.compress(text, transform="bwt")    # bzip2's pipeline, tANS-coded
+blob = pytans.compress(text, transform="lz77")   # zlib/zstd's pipeline shape
+pytans.decompress(blob)                          # transform recorded in the frame
+```
+
+- **`"bwt"`** — Burrows-Wheeler transform + move-to-front + zero-run
+  splitting. The strongest choice for text, source code and logs.
+- **`"lz77"`** — greedy match-finding emitting zstd-style substreams
+  (literals / run lengths / match lengths / offset buckets), each compressed
+  with its own fitted tANS table.
+
+A transformed frame is kept **only when it is actually smaller** than the
+plain one, so enabling a transform never costs more than CPU — on
+non-repetitive data the output is byte-identical to plain mode. Streaming
+applies the transform per block (`compress_stream(..., transform="bwt")`);
+larger blocks give BWT more context, so consider `--block-size` 512 KiB–1 MiB
+for bz2-like ratios. The BWT suffix sort automatically uses numpy when
+installed (much faster); otherwise a pure-Python sort is used.
 
 ### Reusable coder: one table, many messages
 
@@ -312,6 +340,7 @@ pytans decompress output.tans -o - | head
 | `-f`, `--force` | both | Overwrite an existing output file |
 | `--table-log N` | compress | Force a `2**N`-state table (4–15; default: auto) |
 | `--block-size BYTES` | compress | Uncompressed bytes per streaming block (default 131072) |
+| `--transform {bwt,lz77}` | compress | Modeling stage for repetitive data; kept per block only when it shrinks the output |
 
 Files are processed through the streaming layer, so memory stays bounded
 regardless of file size, and partial output is removed if the input turns out to
@@ -321,9 +350,9 @@ be corrupt.
 
 | Name | Description |
 | --- | --- |
-| `compress(data, table_log=None, max_table_log=12) -> bytes` | Compress bytes into a self-contained frame; stores raw if compression wouldn't help. |
-| `decompress(blob) -> bytes` | Restore the original bytes from a frame. |
-| `compress_stream(src, dst, *, block_size=131072, table_log=None, max_table_log=12) -> (in, out)` | Stream-compress a binary file-like, block by block. |
+| `compress(data, table_log=None, max_table_log=12, transform=None) -> bytes` | Compress bytes into a self-contained frame; stores raw if compression wouldn't help. |
+| `decompress(blob) -> bytes` | Restore the original bytes from a frame (any mode, transforms included). |
+| `compress_stream(src, dst, *, block_size=131072, table_log=None, max_table_log=12, transform=None) -> (in, out)` | Stream-compress a binary file-like, block by block. |
 | `decompress_stream(src, dst) -> (in, out)` | Stream-decompress; also accepts a single one-shot frame. |
 | `pytans.aio.compress_stream` / `decompress_stream` | Async equivalents for asyncio / aiofiles sources and sinks. |
 | `TansCoder(counts, table_log=None)` | Build a coder from raw or normalised per-byte counts. |
@@ -334,6 +363,7 @@ be corrupt.
 | `normalize_counts(counts, table_log) -> dict` | Scale counts to sum to `2**table_log`, keeping every symbol ≥ 1. |
 | `optimal_table_log(sample_size, alphabet_size, max_table_log=12) -> int` | FSE-style automatic table sizing. |
 | `DEFAULT_BLOCK_SIZE` | Default streaming block size (128 KiB). |
+| `TRANSFORMS` | Available transform names (`"bwt"`, `"lz77"`); details in [`src/pytans/transforms.py`](src/pytans/transforms.py). |
 | `TansError` / `CorruptedDataError` | Base error (a `ValueError`) / damaged-input error. |
 
 Exact byte layouts are documented in
