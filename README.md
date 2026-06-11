@@ -142,7 +142,7 @@ entropy coder can do:
 | Data | Size | Floor | **pytans** | zlib&nbsp;-9 | bz2&nbsp;-9 | lzma |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | English text (*War and Peace*) | 3.4 MB | 57.9 % | 58.1 % | 36.4 % | **26.4 %** | 27.8 % |
-| Python source code | 3.0 MB | 60.8 % | 58.9 % | 24.1 % | 20.1 % | **19.0 %** |
+| Python source code | 3.0 MB | 56.6 % | 56.4 % | 22.9 % | 18.9 % | **18.3 %** |
 | Sorted dictionary (`/usr/share/dict/words`) | 2.5 MB | 54.1 % | 52.7 % | 30.2 % | 34.4 % | **25.6 %** |
 | PCM audio (16-bit system sounds) | 4.8 MB | 72.1 % | 70.3 % | 64.5 % | 62.1 % | **48.3 %** |
 | JSON logs (synthetic) | 2.3 MB | 60.5 % | 60.6 % | 12.6 % | **9.7 %** | 10.4 % |
@@ -171,6 +171,10 @@ How to read this — it is really comparing two different jobs:
 Speed is deliberately omitted: those are decades-tuned C libraries and this is
 readable pure Python (~3 MiB/s). In C, FSE famously *outruns* zlib's entropy
 stage — speed is the reason it exists.
+
+Regenerate this table with
+[`examples/benchmark.py`](examples/benchmark.py) (corpora that can't be built
+on your machine are skipped).
 
 ## 📖 Usage guide
 
