@@ -269,6 +269,19 @@ bz2/lzma shown for reference):
 dictionary stays with lzma, whose price-based optimal parser is the one
 piece none of these pipelines replicate.
 
+**A note on attribution.** These wins belong to the *pipeline*, not to tANS
+uniquely. Decomposed on the text corpus: BWT and MTF are size-neutral
+permutations, zero-RLE alone reaches 64 %, plain tANS alone 58 %, and only
+the combination reaches 25.5 % — the entropy stage does the larger share,
+but on post-RLE streams any competent entropy coder lands within ~0.4
+points (deflate's adaptive Huffman codes the identical substreams to
+25.1 %, because BWT output rewards per-block table refitting and the RLE
+step strips out the extreme skew). Where tANS itself is decisive is skew
+*without* repetition: on the "skewed bytes" row above it sits exactly on
+the entropy floor while Huffman pays the integer-bit penalty, and on a
+95/5 binary source the gap is 3.6 % (tANS, the optimum) vs 13.2 %
+(Huffman's one-bit-per-symbol wall).
+
 A transformed frame is kept **only when it is actually smaller** than the
 plain one, so enabling a transform never costs more than CPU — on
 non-repetitive data the output is byte-identical to plain mode (the last
