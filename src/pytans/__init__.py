@@ -11,7 +11,8 @@ State Entropy. This package provides:
 - :class:`TansCoder` — a reusable coder built from symbol statistics, for
   when many messages share one table (dictionary-style usage).
 - Optional modeling transforms for repetitive data — ``transform="bwt"``
-  (Burrows-Wheeler, bzip2-style) or ``transform="lz77"`` (match-finding,
+  (Burrows-Wheeler, bzip2-style), ``"bwt2"`` (BWT with order-1 context
+  splitting, the strongest) or ``"lz77"`` (lazy match-finding,
   zlib/zstd-style); see :mod:`pytans.transforms`.
 - ``pytans`` CLI — compress and decompress files.
 """
@@ -23,7 +24,7 @@ from .stream import DEFAULT_BLOCK_SIZE, compress_stream, decompress_stream
 from .tables import normalize_counts, optimal_table_log
 from .transforms import TRANSFORMS
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "compress",

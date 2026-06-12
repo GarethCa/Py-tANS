@@ -6,7 +6,12 @@ skew the entropy stage can use:
 
 - ``"bwt"`` — Burrows-Wheeler transform + move-to-front + zero run
   splitting: bzip2's pipeline. Best on text and structured data.
-- ``"lz77"`` — greedy hash-chain match-finder emitting zstd-style
+- ``"bwt2"`` — ``"bwt"`` plus order-1 *context splitting*: the MTF
+  symbols are partitioned by the previous symbol's magnitude into 8
+  streams, each entropy-coded with its own fitted table. tANS tables
+  are static, so this two-pass split is the tANS-shaped counterpart of
+  lzma's adaptive context modeling — it beats lzma on text and logs.
+- ``"lz77"`` — lazy hash-chain match-finder emitting zstd-style
   substreams (literals, literal-run lengths, match lengths, offset
   buckets, raw offset extra bits): the zlib/zstd pipeline shape.
 
@@ -195,6 +200,60 @@ def bwt_decode(streams: List[bytes]) -> bytes:
     return _ibwt(last, primary)
 
 
+# --------------------------------------------------- BWT + context split
+
+_N_MTF_CONTEXTS = 8
+
+
+def _mtf_context(prev_symbol: int) -> int:
+    """Context bucket from the previous MTF symbol's magnitude.
+
+    MTF output after a BWT is dominated by small values whose local
+    distribution depends strongly on whether the neighbourhood is calm
+    (runs of 0/1) or busy (large jumps); 0, 1, then power-of-two bands.
+    """
+    if prev_symbol < 2:
+        return prev_symbol
+    return min(prev_symbol.bit_length(), 6) + 1
+
+
+def bwt2_encode(data: bytes) -> List[bytes]:
+    last, primary = _bwt(data)
+    syms, runs = _zero_rle_split(_mtf(last))
+    contexts = [bytearray() for _ in range(_N_MTF_CONTEXTS)]
+    ctx = 0
+    for symbol in syms:
+        contexts[ctx].append(symbol)
+        ctx = _mtf_context(symbol)
+    return [write_uvarint(primary) + runs] + [bytes(c) for c in contexts]
+
+
+def bwt2_decode(streams: List[bytes]) -> bytes:
+    if len(streams) != 1 + _N_MTF_CONTEXTS:
+        raise CorruptedDataError(
+            f"BWT2 frame must carry {1 + _N_MTF_CONTEXTS} substreams"
+        )
+    primary, pos = read_uvarint(streams[0], 0)
+    runs = streams[0][pos:]
+    contexts = streams[1:]
+    # Re-interleave: the encoder routed each symbol by the context of the
+    # one before it, so the same walk drains the streams deterministically.
+    positions = [0] * _N_MTF_CONTEXTS
+    syms = bytearray()
+    ctx = 0
+    for _ in range(sum(len(c) for c in contexts)):
+        stream = contexts[ctx]
+        at = positions[ctx]
+        if at >= len(stream):
+            raise CorruptedDataError("BWT2 context stream exhausted")
+        symbol = stream[at]
+        positions[ctx] = at + 1
+        syms.append(symbol)
+        ctx = _mtf_context(symbol)
+    last = _imtf(_zero_rle_join(bytes(syms), runs))
+    return _ibwt(last, primary)
+
+
 # -------------------------------------------------------------------- LZ77
 
 _MIN_MATCH = 4
@@ -232,50 +291,65 @@ def _byte_unescape(data: bytes, count: int) -> List[int]:
 
 
 def _lz77_parse(data: bytes) -> Tuple[bytes, List[Tuple[int, int, int]]]:
-    """Greedy parse -> (literals, [(literal_run, match_len, offset)]).
+    """Lazy parse -> (literals, [(literal_run, match_len, offset)]).
 
-    The final sequence may have match_len 0 (trailing literals only).
+    Lazy matching: when the position one byte ahead offers a longer
+    match, the current byte is emitted as a literal instead (zlib's
+    trick) — same wire format, better parse. The final sequence may
+    have match_len 0 (trailing literals only).
     """
     n = len(data)
     table: Dict[bytes, List[int]] = {}
 
     def remember(pos: int) -> None:
+        if pos + _MIN_MATCH > n:
+            return
         bucket = table.setdefault(data[pos:pos + _MIN_MATCH], [])
         bucket.append(pos)
         if len(bucket) > 2 * _MAX_CHAIN:
             del bucket[:_MAX_CHAIN]
+
+    def find(pos: int) -> Tuple[int, int]:
+        best_len = 0
+        best_off = 0
+        if pos + _MIN_MATCH <= n:
+            chain = table.get(data[pos:pos + _MIN_MATCH])
+            if chain:
+                for j in reversed(chain[-_MAX_CHAIN:]):
+                    length = _MIN_MATCH
+                    while pos + length < n and data[j + length] == data[pos + length]:
+                        length += 1
+                    if length > best_len:
+                        best_len, best_off = length, pos - j
+                        if length >= 512:
+                            break
+        return best_len, best_off
 
     literals = bytearray()
     sequences: List[Tuple[int, int, int]] = []
     literal_run = 0
     i = 0
     while i < n:
-        best_len = 0
-        best_off = 0
-        if i + _MIN_MATCH <= n:
-            chain = table.get(data[i:i + _MIN_MATCH])
-            if chain:
-                for j in reversed(chain[-_MAX_CHAIN:]):
-                    length = _MIN_MATCH
-                    while i + length < n and data[j + length] == data[i + length]:
-                        length += 1
-                    if length > best_len:
-                        best_len, best_off = length, i - j
-                        if length >= 512:
-                            break
+        best_len, best_off = find(i)
         if best_len >= _MIN_MATCH:
+            remember(i)
+            next_len, _ = find(i + 1)
+            if next_len > best_len:
+                literals.append(data[i])
+                literal_run += 1
+                i += 1
+                continue
             sequences.append((literal_run, best_len, best_off))
             literal_run = 0
             end = i + best_len
             step = 1 if best_len < 64 else 4
-            for p in range(i, min(end, n - _MIN_MATCH), step):
+            for p in range(i + 1, min(end, n - _MIN_MATCH), step):
                 remember(p)
             i = end
         else:
             literals.append(data[i])
             literal_run += 1
-            if i + _MIN_MATCH <= n:
-                remember(i)
+            remember(i)
             i += 1
     if literal_run:
         sequences.append((literal_run, 0, 0))
@@ -348,6 +422,7 @@ _Decoder = Callable[[List[bytes]], bytes]
 TRANSFORMS: Dict[str, Tuple[int, _Encoder, _Decoder]] = {
     "bwt": (1, bwt_encode, bwt_decode),
     "lz77": (2, lz77_encode, lz77_decode),
+    "bwt2": (3, bwt2_encode, bwt2_decode),
 }
 
 _BY_ID: Dict[int, Tuple[str, _Encoder, _Decoder]] = {
